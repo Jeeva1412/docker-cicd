@@ -19,44 +19,42 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ secrets.AWS_REGION }}
 
-
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build Docker image
-      env:
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        echo "Building image..."
+        IMAGE_TAG=${GITHUB_SHA}
+        echo "🛠️ Building image with tag: $IMAGE_TAG"
         docker build -t ${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
 
     - name: Tag and Push image to ECR
-      env:
-        IMAGE_TAG: ${{ github.sha }}
       run: |
+        IMAGE_TAG=${GITHUB_SHA}
         FULL_IMAGE_NAME=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
+        echo "🔖 Tagging image as $FULL_IMAGE_NAME"
         docker tag ${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG $FULL_IMAGE_NAME
+        echo "📤 Pushing image to ECR..."
         docker push $FULL_IMAGE_NAME
 
     - name: Start ECR image scan
-      env:
-        IMAGE_TAG: ${{ github.sha }}
       run: |
+        IMAGE_TAG=${GITHUB_SHA}
+        echo "🔍 Starting vulnerability scan for image tag: $IMAGE_TAG"
         aws ecr start-image-scan \
           --repository-name ${{ secrets.ECR_REPOSITORY }} \
           --image-id imageTag=$IMAGE_TAG
 
     - name: Wait for ECR scan to complete
       run: |
-        echo "Waiting for scan to complete..."
-        sleep 20  # ECR scans typically take a few seconds
+        echo "⏳ Waiting 20s for scan to complete..."
+        sleep 20
 
     - name: Check ECR scan findings
-      env:
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        echo "Checking ECR vulnerability findings..."
+        IMAGE_TAG=${GITHUB_SHA}
+        echo "📋 Checking vulnerability findings..."
         HIGH_COUNT=$(aws ecr describe-image-scan-findings \
           --repository-name ${{ secrets.ECR_REPOSITORY }} \
           --image-id imageTag=$IMAGE_TAG \
@@ -69,17 +67,15 @@ jobs:
           --query 'length(imageScanFindings.findings[?severity==`CRITICAL`])' \
           --output text 2>/dev/null || echo 0)
 
-        echo "Found $HIGH_COUNT HIGH and $CRITICAL_COUNT CRITICAL vulnerabilities"
+        echo "🔎 Found $HIGH_COUNT HIGH and $CRITICAL_COUNT CRITICAL vulnerabilities"
 
         if [ "$HIGH_COUNT" -gt 0 ] || [ "$CRITICAL_COUNT" -gt 0 ]; then
           echo "❌ Vulnerabilities found! Failing the job."
           exit 1
         else
-        
-          echo "✅ No high or critical vulnerabilities found."
+          echo "✅ No high or critical vulnerabilities found. Safe to deploy."
         fi
 
-    # Optional deployment step if scan passes
+    # Uncomment if you want to deploy after scan success
     # - name: Deploy to ECS
-    #   run: |
-    #     echo "Add your ECS or Fargate deployment logic here."
+    #   run: echo "🚀 Add ECS or Fargate deployment here"
