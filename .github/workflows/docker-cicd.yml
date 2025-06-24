@@ -75,6 +75,7 @@ jobs:
           echo "❌ Vulnerabilities found! Failing the job."
           exit 1
         else
+        
           echo "✅ No high or critical vulnerabilities found."
         fi
 
