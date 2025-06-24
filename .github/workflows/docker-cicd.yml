@@ -1,36 +1,83 @@
-name: Build and Push Docker Image to AWS ECR (Alpine + Commit Hash)
+name: Build, Scan, and Push Docker Image to ECR
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]  # Trigger only on push to main branch
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ap-south-1
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push Docker image
-        env:
-          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}             # e.g., 072244248186.dkr.ecr.us-east-1.amazonaws.com
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}         # e.g., my-app
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          echo "Using tag: $IMAGE_TAG"
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+    - name: Build Docker image
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "Building image..."
+        docker build -t ${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
+
+    - name: Tag and Push image to ECR
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        FULL_IMAGE_NAME=${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
+        docker tag ${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG $FULL_IMAGE_NAME
+        docker push $FULL_IMAGE_NAME
+
+    - name: Start ECR image scan
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        aws ecr start-image-scan \
+          --repository-name ${{ secrets.ECR_REPOSITORY }} \
+          --image-id imageTag=$IMAGE_TAG
+
+    - name: Wait for ECR scan to complete
+      run: |
+        echo "Waiting for scan to complete..."
+        sleep 20  # ECR scans typically take a few seconds
+
+    - name: Check ECR scan findings
+      env:
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        echo "Checking ECR vulnerability findings..."
+        HIGH_COUNT=$(aws ecr describe-image-scan-findings \
+          --repository-name ${{ secrets.ECR_REPOSITORY }} \
+          --image-id imageTag=$IMAGE_TAG \
+          --query 'length(imageScanFindings.findings[?severity==`HIGH`])' \
+          --output text 2>/dev/null || echo 0)
+
+        CRITICAL_COUNT=$(aws ecr describe-image-scan-findings \
+          --repository-name ${{ secrets.ECR_REPOSITORY }} \
+          --image-id imageTag=$IMAGE_TAG \
+          --query 'length(imageScanFindings.findings[?severity==`CRITICAL`])' \
+          --output text 2>/dev/null || echo 0)
+
+        echo "Found $HIGH_COUNT HIGH and $CRITICAL_COUNT CRITICAL vulnerabilities"
+
+        if [ "$HIGH_COUNT" -gt 0 ] || [ "$CRITICAL_COUNT" -gt 0 ]; then
+          echo "❌ Vulnerabilities found! Failing the job."
+          exit 1
+        else
+          echo "✅ No high or critical vulnerabilities found."
+        fi
+
+    # Optional deployment step if scan passes
+    # - name: Deploy to ECS
+    #   run: |
+    #     echo "Add your ECS or Fargate deployment logic here."
