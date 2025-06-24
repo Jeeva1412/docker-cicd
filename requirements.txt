@@ -1,1 +1,4 @@
-flask==3.1.1
+# flask==3.1.1        
+
+
+flask==0.12  # Intentionally outdated and insecure
